@@ -1,0 +1,17 @@
+# Example batch config for `gitlab-pat-manager sync --config repos.yaml`.
+# Each entry is one repo whose read-only clone token should be kept alive.
+repos:
+  - project: my-group/my-subgroup/repo-a
+    name: domino-clone-ro
+    expires_in_days: 30
+    rotate_within_days: 7
+
+  - project: my-group/repo-b
+    name: domino-clone-ro
+    scopes: [read_repository]
+    access_level: 20 # Reporter
+    expires_in_days: 30
+    rotate_within_days: 7
+
+  - project: 123456 # numeric project ID also works
+    name: domino-clone-ro

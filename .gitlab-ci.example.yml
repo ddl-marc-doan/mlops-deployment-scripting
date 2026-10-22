@@ -1,0 +1,75 @@
+# Sample pipeline illustrating where gitlab_pat_manager fits into the
+# "GitLab CI run -> Domino Service Account -> GitLab clone token" flow.
+#
+# This is a reference, not a drop-in config: the domino-service-account and
+# attach-clone-token-to-domino stages are placeholders for whatever scripting
+# already handles the Domino side (SA creation/idempotency, and the Domino
+# API token, which is rotated by its own separate process - out of scope for
+# this repo). The only stage this repo actually owns is
+# provision-gitlab-clone-token.
+#
+# Variables expected to be set as masked + protected CI/CD variables:
+#   GITLAB_ROOT_TOKEN  - project/group access token with `api` scope and
+#                        Maintainer/Owner rights on CI_PROJECT_ID. Used only
+#                        to mint the narrower read-only clone token below.
+#   DOMINO_API_HOST    - wherever the attach-token job calls out to Domino.
+#   DOMINO_API_TOKEN   - credential for calling Domino's API (not the
+#                        per-repo GitLab token this repo produces).
+
+stages:
+  - provision-domino-service-account
+  - provision-gitlab-clone-token
+  - attach-clone-token-to-domino
+
+# --- Owned elsewhere: idempotent Domino Service Account + Domino API token ---
+domino-service-account:
+  stage: provision-domino-service-account
+  script:
+    - echo "Placeholder: create the Domino Service Account if it doesn't exist yet (idempotent), and mint/refresh its Domino API token."
+    - echo "Not part of gitlab_pat_manager - see the Domino-side provisioning scripting."
+  # artifacts:
+  #   reports:
+  #     dotenv: domino_sa.env   # e.g. DOMINO_SERVICE_ACCOUNT_ID=...
+
+# --- Owned by this repo: a read-only GitLab clone token, per repo ---
+provision-gitlab-clone-token:
+  stage: provision-gitlab-clone-token
+  image: python:3.12-slim
+  needs: ["domino-service-account"]
+  script:
+    - pip install -q .
+    - >
+      gitlab-pat-manager ensure
+      --project "$CI_PROJECT_PATH"
+      --name "domino-clone-ro"
+      --expires-in-days 30
+      --rotate-within-days 7
+      > token_result.json
+    # token_result.json only contains the secret `token` field when a token
+    # was actually created/rotated this run; a no-op `ensure` omits it.
+    # Hand it to the next stage as a masked dotenv artifact instead of a
+    # plain file, so it never lands in job logs.
+    - >
+      python -c "
+      import json
+      data = json.load(open('token_result.json'))
+      token = data.get('token', '')
+      with open('clone_token.env', 'w') as f:
+          f.write(f'GITLAB_CLONE_TOKEN={token}\n')
+          f.write(f'GITLAB_CLONE_TOKEN_CHANGED={str(data.get(\"changed\", False)).lower()}\n')
+      "
+    - rm -f token_result.json
+  artifacts:
+    reports:
+      dotenv: clone_token.env
+    expire_in: 1 hour
+
+# --- Owned elsewhere: wire the clone token into the Domino SA's git creds ---
+attach-clone-token-to-domino:
+  stage: attach-clone-token-to-domino
+  needs: ["provision-gitlab-clone-token"]
+  rules:
+    - if: '$GITLAB_CLONE_TOKEN_CHANGED == "true"'
+  script:
+    - echo "Placeholder: call Domino's API to set \$GITLAB_CLONE_TOKEN as the git credential for the Domino Service Account provisioned above."
+    - echo "Skipped automatically when GITLAB_CLONE_TOKEN_CHANGED=false (ensure was a no-op, nothing to re-attach)."
